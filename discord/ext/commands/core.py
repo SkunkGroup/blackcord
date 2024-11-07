@@ -420,6 +420,12 @@ class Command(_BaseCommand, Generic[CogT, P, T]):
         self.aliases: Union[List[str], Tuple[str]] = kwargs.get('aliases', [])
         self.extras: Dict[Any, Any] = kwargs.get('extras', {})
 
+        self.example: Optional[str] = kwargs.get('example')
+        self.information: Optional[str] = kwargs.get('information')
+        self.notes: Optional[str] = kwargs.get('notes')
+        self.parameters: Dict[Any, Any] = kwargs.get('parameters', {})
+
+
         if not isinstance(self.aliases, (list, tuple)):
             raise TypeError("Aliases of a command must be a list or a tuple of strings.")
 
