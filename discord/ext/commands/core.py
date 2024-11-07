@@ -43,11 +43,13 @@ from typing import (
     TypeVar,
     Union,
     overload,
+    get_args,
+    get_origin,
 )
 import re
-
+from .flags import BasicFlags
 import discord
-
+from dataclasses import dataclass
 from ._types import _BaseCommand, CogT
 from .cog import Cog
 from .context import Context
@@ -293,6 +295,12 @@ class _AttachmentIterator:
         return self.index >= len(self.data)
 
 
+@dataclass
+class CommandArgument:
+    name: str
+    optional: bool
+
+
 class Command(_BaseCommand, Generic[CogT, P, T]):
     r"""A class that implements the protocol for a bot text command.
 
@@ -419,12 +427,13 @@ class Command(_BaseCommand, Generic[CogT, P, T]):
         self.rest_is_raw: bool = kwargs.get('rest_is_raw', False)
         self.aliases: Union[List[str], Tuple[str]] = kwargs.get('aliases', [])
         self.extras: Dict[Any, Any] = kwargs.get('extras', {})
-
+        self._flag: Optional[BasicFlags] = kwargs.get('flag')
         self.example: Optional[str] = kwargs.get('example')
         self.information: Optional[str] = kwargs.get('information')
         self.notes: Optional[str] = kwargs.get('notes')
         self.parameters: Dict[Any, Any] = kwargs.get('parameters', {})
-
+        self.user_permissions: List[str] = []
+        self.bot_permissions: List[str] = []
 
         if not isinstance(self.aliases, (list, tuple)):
             raise TypeError("Aliases of a command must be a list or a tuple of strings.")
@@ -517,6 +526,50 @@ class Command(_BaseCommand, Generic[CogT, P, T]):
             globalns = {}
 
         self.params: Dict[str, Parameter] = get_signature_parameters(function, globalns)
+
+
+
+
+    @discord.utils.cached_property
+    def permissions(self) -> Optional[List[str]]:
+        perms = [
+            perm 
+            for check in self.checks 
+            if check.__closure__ is not None
+            for cell in check.__closure__ 
+            if isinstance(cell.cell_contents, dict)
+            for perm, val in cell.cell_contents.items() 
+            if val
+        ]
+        return perms if perms else None
+
+
+    @discord.utils.cached_property
+    def arguments(self: Command) -> List[CommandArgument]:
+        # Uses get_origin to check if the annotation is a Literal
+        # If it is, we need to use get_args to return the literal values
+        # Otherwise, we just return the parameter name
+        def get_parameter_name(name: str, annotation: Optional[type]) -> str:
+            if annotation is not None and get_origin(annotation) is Literal:
+                literal_values = get_args(annotation)
+                # Literally only here for easy formatting later on for help commands
+                if len(literal_values) > 1:
+                    return ', '.join([f"'{value}'" for value in literal_values[:-1]]) + f" or '{literal_values[-1]}'"
+                else:
+                    return f'`{literal_values[0]}`'  # type: ignore
+            return name.replace('_', ' ')
+
+        # Skip the first two parameters (self and Interaction, or Context)
+        # and return the rest as CommandArguments
+        # If parameter annotation is Union with type(None), it's optional
+        return [
+            CommandArgument(
+                name=get_parameter_name(name, param.annotation),
+                optional=(get_origin(param.annotation) is Union and type(None) in get_args(param.annotation)),
+            )
+            for name, param in list(inspect.signature(self.callback).parameters.items())[2:]
+        ]
+    
 
     def add_check(self, func: UserCheck[Context[Any]], /) -> None:
         """Adds a check to the command.

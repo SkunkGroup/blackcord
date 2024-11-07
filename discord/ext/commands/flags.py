@@ -28,7 +28,7 @@ import inspect
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Literal, Optional, Pattern, Set, Tuple, Type, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Literal, Optional, Pattern, Set, Tuple, Type, Union, get_args, get_origin
 
 from discord.utils import MISSING, maybe_coroutine, resolve_annotation
 
@@ -40,6 +40,7 @@ __all__ = (
     'Flag',
     'flag',
     'FlagConverter',
+    'BasicFlags',
 )
 
 
@@ -668,3 +669,111 @@ class FlagConverter(metaclass=FlagsMeta):
             setattr(self, flag.attribute, values)
 
         return self
+
+
+
+
+
+
+class MetaFlags(type):
+    """Metaclass for managing flags and their attributes."""
+
+    if TYPE_CHECKING:
+        __commands_flags__: Dict[str, Any]
+        __case_insensitive__: bool
+
+    def __new__(
+        cls,
+        name: str,
+        bases: Tuple[type, ...],
+        attrs: Dict[str, Any],
+        *,
+        case_insensitive: bool = False,
+    ) -> MetaFlags:
+        attrs['__commands_flags__'] = {}
+
+        for attr_name, attr_value in attrs.items():
+            if not attr_name.startswith('__'):
+                attrs['__commands_flags__'][attr_name] = attr_value
+
+        attrs['__case_insensitive__'] = case_insensitive
+        return super().__new__(cls, name, bases, attrs)
+
+
+class BasicFlags(metaclass=MetaFlags):
+    """A base class for defining flags with attributes."""
+
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    @classmethod
+    def get_flags(cls) -> Dict[str, Any]:
+        """Get the dictionary of flag names and their default values."""
+        return cls.__commands_flags__.copy()
+
+    def __iter__(self) -> Iterator[Tuple[str, Any]]:
+        """Iterate over the flags and their values."""
+        for flag_name in self.__class__.get_flags():
+            yield flag_name, getattr(self, flag_name, None)
+
+    @classmethod
+    def parse_flags(cls, argument: str) -> Dict[str, Any]:
+        """Parse the argument string to extract flag values."""
+        result: Dict[str, Any] = {}
+        case_insensitive = getattr(cls, '__case_insensitive__', False)
+        flags = cls.get_flags()
+
+        flag_pattern = re.compile(r'--(\w+)(?: (\S+))?')
+
+        for match in flag_pattern.finditer(argument):
+            flag_name, flag_value = match.groups()
+            if case_insensitive:
+                flag_name = flag_name.lower()
+
+            if flag_name not in flags:
+                raise TypeError(f"Unknown flag `{flag_name}`.")
+
+            if not flag_value:
+                continue
+
+            _type = (
+                get_args(cls.__annotations__[flag_name])[0]
+                if get_origin(cls.__annotations__[flag_name]) is Union
+                else cls.__annotations__[flag_name]
+            )
+
+            try:
+                result[flag_name] = _type(flag_value)
+            except:
+                raise TypeError(f"You inputted an invalid type for the **flag** `{flag_name}`.")
+
+        for flag in [unbound for unbound in flags.keys() if unbound not in result]:
+            _type = (
+                get_args(cls.__annotations__[flag])[0]
+                if get_origin(cls.__annotations__[flag]) is Union
+                else cls.__annotations__[flag]
+            )
+
+            if not (_type is bool):
+                continue
+
+            if f"--{flag}" not in argument:
+                continue
+
+            result[flag] = True
+
+        for flag_name, default_value in flags.items():
+            if flag_name not in result:
+                result[flag_name] = default_value
+
+        return result
+
+    @classmethod
+    async def convert(cls, context: Context, argument: str) -> Self:
+        """Convert argument string to an instance of the class with parsed flags."""
+        flags_data = cls.parse_flags(argument)
+        instance = cls()
+        for flag_name, value in flags_data.items():
+            setattr(instance, flag_name, value)
+        return instance
